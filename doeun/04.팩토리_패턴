@@ -1,0 +1,685 @@
+# 팩토리 패턴 — "new를 직접 쓰지 마세요"
+
+## 들어가며
+
+코드에서 `new`를 쓸 때마다 우리는 **구체 클래스에 의존**하게 됩니다.
+지금은 요구사항이 2개지만, 곧 5개가 되고, 10개가 됩니다.
+그때마다 `new` 주변의 코드가 줄줄이 바뀝니다.
+
+팩토리 패턴은 이 문제를 정면으로 해결합니다.
+**객체 생성 로직을 캡슐화**해서, 클라이언트 코드는 "무엇을 만들지"만 요청하고 "어떻게 만드는지"는 전혀 모르게 하는 것이죠.
+
+이 글에서는 팩토리 패턴의 세 가지 단계를 점진적으로 살펴봅니다:
+
+1. **Simple Factory** — 관용적 패턴 (GoF 공식 패턴은 아님)
+2. **Factory Method Pattern** — 서브클래스에게 생성을 위임
+3. **Abstract Factory Pattern** — 관련 제품군을 통째로 교체
+
+개념을 잡은 뒤, **프론트엔드 실무에서 팩토리 패턴이 어떻게 쓰이는지**까지 다룹니다.
+
+---
+
+## 1. 문제 상황 — Before
+
+피자 가게를 운영한다고 해봅시다.
+
+```typescript
+function orderPizza(type: string): Pizza {
+  let pizza: Pizza;
+
+  // 🚨 피자 종류가 바뀔 때마다 이 코드를 수정해야 한다
+  if (type === "cheese") {
+    pizza = new CheesePizza();
+  } else if (type === "pepperoni") {
+    pizza = new PepperoniPizza();
+  } else if (type === "clam") {
+    pizza = new ClamPizza();
+  } else {
+    throw new Error(`Unknown pizza type: ${type}`);
+  }
+
+  // 이 아래는 변하지 않는 로직
+  pizza.prepare();
+  pizza.bake();
+  pizza.cut();
+  pizza.box();
+
+  return pizza;
+}
+```
+
+얼핏 보면 문제 없어 보이지만, 이 코드에는 구조적인 약점이 있습니다.
+
+**첫째, 변경에 취약합니다.**
+새 피자를 추가하거나 기존 피자를 제거할 때마다 `orderPizza` 함수 자체를 열어야 합니다. 피자 종류가 10개, 20개로 늘어나면 이 if-else 체인은 걷잡을 수 없이 길어집니다.
+
+**둘째, 생성과 사용이 강하게 결합되어 있습니다.**
+`orderPizza`는 "어떤 피자를 만들지"와 "피자를 어떻게 처리할지"를 동시에 알고 있습니다. 단일 책임 원칙(SRP) 위반입니다.
+
+**셋째, OCP(개방-폐쇄 원칙)를 위반합니다.**
+새로운 피자 종류를 추가하려면 기존 코드를 수정해야 합니다. 확장에는 열려 있어야 하지만, 변경에는 닫혀 있어야 한다는 원칙에 정면으로 어긋나죠.
+
+---
+
+## 2. Simple Factory — 생성 로직을 분리하자
+
+가장 먼저 할 수 있는 일은 **생성 로직을 별도 클래스로 추출**하는 것입니다.
+
+```typescript
+class SimplePizzaFactory {
+  createPizza(type: string): Pizza {
+    switch (type) {
+      case "cheese":
+        return new CheesePizza();
+      case "pepperoni":
+        return new PepperoniPizza();
+      case "clam":
+        return new ClamPizza();
+      default:
+        throw new Error(`Unknown pizza type: ${type}`);
+    }
+  }
+}
+
+class PizzaStore {
+  private factory: SimplePizzaFactory;
+
+  constructor(factory: SimplePizzaFactory) {
+    this.factory = factory;
+  }
+
+  orderPizza(type: string): Pizza {
+    const pizza = this.factory.createPizza(type); // 생성은 팩토리에게 위임
+
+    pizza.prepare();
+    pizza.bake();
+    pizza.cut();
+    pizza.box();
+
+    return pizza;
+  }
+}
+```
+
+Simple Factory는 GoF가 정의한 공식 디자인 패턴이 아닙니다. 그보다는 **자주 쓰이는 프로그래밍 관용구(idiom)** 에 가깝습니다. 하지만 효과는 확실합니다.
+
+`PizzaStore`는 더 이상 구체 피자 클래스를 직접 참조하지 않습니다. 피자 메뉴가 바뀌면 `SimplePizzaFactory`만 수정하면 됩니다. 생성과 사용이 분리된 것이죠.
+
+**그런데 한계가 있습니다.**
+
+만약 피자 가게가 프랜차이즈로 확장되어 뉴욕 스타일, 시카고 스타일처럼 지역마다 다른 피자를 만들어야 한다면? Simple Factory 하나로는 모든 지역의 생성 로직을 담을 수 없고, 팩토리 자체를 통째로 교체해야 합니다. 확장에 유연하지 않죠.
+
+---
+
+## 3. Factory Method Pattern — 서브클래스가 결정한다
+
+> **정의:** 객체를 생성하기 위한 인터페이스를 정의하되, 어떤 클래스의 인스턴스를 만들지는 **서브클래스가 결정**하게 합니다.
+
+핵심 아이디어는 간단합니다. 상위 클래스에서 객체 생성 메서드를 `abstract`로 선언하고, 각 서브클래스가 자신만의 방식으로 이를 구현하는 것입니다.
+
+먼저 피자를 정의합니다:
+
+```typescript
+abstract class Pizza {
+  name: string = "";
+  dough: string = "";
+  sauce: string = "";
+  toppings: string[] = [];
+
+  prepare(): void {
+    console.log(`준비 중: ${this.name}`);
+    console.log(`도우: ${this.dough}`);
+    console.log(`소스: ${this.sauce}`);
+    console.log(`토핑: ${this.toppings.join(", ")}`);
+  }
+
+  bake(): void {
+    console.log("175도에서 25분 굽기");
+  }
+
+  cut(): void {
+    console.log("대각선으로 자르기");
+  }
+
+  box(): void {
+    console.log("포장하기");
+  }
+}
+
+// 뉴욕 스타일
+class NYStyleCheesePizza extends Pizza {
+  constructor() {
+    super();
+    this.name = "뉴욕 스타일 치즈 피자";
+    this.dough = "씬 크러스트";
+    this.sauce = "마리나라 소스";
+    this.toppings = ["모짜렐라 치즈"];
+  }
+}
+
+// 시카고 스타일
+class ChicagoStyleCheesePizza extends Pizza {
+  constructor() {
+    super();
+    this.name = "시카고 스타일 치즈 피자";
+    this.dough = "딥 디시";
+    this.sauce = "플럼 토마토 소스";
+    this.toppings = ["모짜렐라 치즈 (듬뿍)"];
+  }
+
+  override cut(): void {
+    console.log("네모나게 자르기"); // 시카고 스타일은 네모로 자른다
+  }
+}
+```
+
+이제 피자 가게를 팩토리 메서드로 구성합니다:
+
+```typescript
+abstract class PizzaStore {
+  // 전체 흐름은 고정 (템플릿 메서드)
+  orderPizza(type: string): Pizza {
+    const pizza = this.createPizza(type); // 👈 팩토리 메서드 호출
+
+    pizza.prepare();
+    pizza.bake();
+    pizza.cut();
+    pizza.box();
+
+    return pizza;
+  }
+
+  // 👇 팩토리 메서드: 서브클래스가 구현
+  protected abstract createPizza(type: string): Pizza;
+}
+
+class NYPizzaStore extends PizzaStore {
+  protected createPizza(type: string): Pizza {
+    switch (type) {
+      case "cheese":
+        return new NYStyleCheesePizza();
+      case "pepperoni":
+        return new NYStylePepperoniPizza();
+      default:
+        throw new Error(`Unknown type: ${type}`);
+    }
+  }
+}
+
+class ChicagoPizzaStore extends PizzaStore {
+  protected createPizza(type: string): Pizza {
+    switch (type) {
+      case "cheese":
+        return new ChicagoStyleCheesePizza();
+      case "pepperoni":
+        return new ChicagoStylePepperoniPizza();
+      default:
+        throw new Error(`Unknown type: ${type}`);
+    }
+  }
+}
+```
+
+```typescript
+// 사용
+const nyStore = new NYPizzaStore();
+const chicagoStore = new ChicagoPizzaStore();
+
+nyStore.orderPizza("cheese");
+// → "뉴욕 스타일 치즈 피자", 씬 크러스트, 대각선 컷
+
+chicagoStore.orderPizza("cheese");
+// → "시카고 스타일 치즈 피자", 딥 디시, 네모 컷
+```
+
+### 왜 이렇게 하는 걸까?
+
+`PizzaStore`(상위 클래스)는 `createPizza`가 어떤 피자를 만드는지 전혀 모릅니다. 알 필요도 없습니다. `orderPizza`의 prepare → bake → cut → box 흐름은 어떤 피자든 동일하게 적용되고, "어떤 피자를 만들지"라는 결정만 서브클래스에 위임하는 것이죠.
+
+이 구조는 **템플릿 메서드 패턴**과 자연스럽게 결합됩니다. `orderPizza`가 전체 알고리즘의 뼈대를 정의하고, 그 중 하나의 단계(생성)만 서브클래스에게 맡기는 형태입니다.
+
+새로운 지역 스타일이 추가되어도 `PizzaStore`는 건드릴 필요가 없습니다. 새 서브클래스를 만들면 됩니다. OCP를 만족합니다.
+
+---
+
+## 4. Abstract Factory Pattern — 제품군을 통째로 교체
+
+Factory Method가 **하나의 제품**을 만드는 메서드를 서브클래싱한다면, Abstract Factory는 **관련된 제품군(family) 전체**를 만드는 인터페이스를 제공합니다.
+
+피자로 다시 생각해봅시다. 뉴욕 피자와 시카고 피자는 도우, 소스, 치즈 같은 **재료 세트**가 통째로 다릅니다. 이걸 개별적으로 관리하면 뉴욕 도우에 시카고 소스가 조합되는 불일치가 생길 수 있죠.
+
+```typescript
+// 재료 인터페이스들
+interface Dough {
+  name: string;
+}
+interface Sauce {
+  name: string;
+}
+interface Cheese {
+  name: string;
+}
+
+// 추상 팩토리: 재료 세트 전체를 만드는 인터페이스
+interface PizzaIngredientFactory {
+  createDough(): Dough;
+  createSauce(): Sauce;
+  createCheese(): Cheese;
+}
+```
+
+```typescript
+// 뉴욕 재료 팩토리
+class NYPizzaIngredientFactory implements PizzaIngredientFactory {
+  createDough(): Dough {
+    return { name: "씬 크러스트 도우" };
+  }
+  createSauce(): Sauce {
+    return { name: "마리나라 소스" };
+  }
+  createCheese(): Cheese {
+    return { name: "레지아노 치즈" };
+  }
+}
+
+// 시카고 재료 팩토리
+class ChicagoPizzaIngredientFactory implements PizzaIngredientFactory {
+  createDough(): Dough {
+    return { name: "딥 디시 도우" };
+  }
+  createSauce(): Sauce {
+    return { name: "플럼 토마토 소스" };
+  }
+  createCheese(): Cheese {
+    return { name: "모짜렐라 치즈" };
+  }
+}
+```
+
+```typescript
+// 피자가 재료 팩토리를 사용
+class CheesePizza extends Pizza {
+  private ingredientFactory: PizzaIngredientFactory;
+
+  constructor(ingredientFactory: PizzaIngredientFactory) {
+    super();
+    this.ingredientFactory = ingredientFactory;
+  }
+
+  override prepare(): void {
+    console.log(`준비 중: ${this.name}`);
+    const dough = this.ingredientFactory.createDough();
+    const sauce = this.ingredientFactory.createSauce();
+    const cheese = this.ingredientFactory.createCheese();
+    console.log(`도우: ${dough.name}, 소스: ${sauce.name}, 치즈: ${cheese.name}`);
+  }
+}
+```
+
+핵심은 `CheesePizza`가 **어떤 재료를 쓰는지 직접 알 필요가 없다**는 것입니다. 주입받은 팩토리가 알아서 일관된 재료 세트를 제공합니다. 팩토리만 바꾸면 뉴욕 스타일에서 시카고 스타일로 재료 전체가 한 번에 바뀝니다.
+
+### Factory Method vs Abstract Factory
+
+| 비교 | Factory Method | Abstract Factory |
+|------|---------------|-----------------|
+| 무엇을 만드나 | 하나의 제품 | 관련된 제품군(family) |
+| 동작 방식 | **상속** — 서브클래스가 생성을 결정 | **구성(composition)** — 팩토리 객체를 주입 |
+| 확장 방법 | 서브클래스 추가 | 새 팩토리 구현체 추가 |
+| 새 제품 추가 시 | 비교적 쉬움 | 인터페이스 변경 필요 (모든 팩토리에 영향) |
+
+둘은 배타적이지 않습니다. Abstract Factory 내부에서 각 제품을 만들 때 Factory Method를 사용하는 경우도 흔합니다.
+
+---
+
+## 5. 디자인 원칙: 의존성 역전 원칙 (DIP)
+
+팩토리 패턴의 이론적 근간이 되는 원칙입니다.
+
+> **"추상화에 의존하라. 구체 클래스에 의존하지 마라."**
+
+팩토리 패턴을 적용하기 전에는 상위 모듈(`PizzaStore`)이 하위 모듈(`NYStyleCheesePizza`, `ChicagoStyleCheesePizza`)에 직접 의존합니다. 새 피자가 추가될 때마다 상위 모듈을 수정해야 하죠.
+
+```
+❌ 팩토리 적용 전 (의존성이 위에서 아래로만 흐름)
+PizzaStore → NYStyleCheesePizza
+PizzaStore → ChicagoStyleCheesePizza
+PizzaStore → NYStylePepperoniPizza
+...
+```
+
+팩토리를 적용하면 상위 모듈과 하위 모듈 모두 **추상화(Pizza)**에 의존하게 됩니다. 의존성의 방향이 역전되는 것이죠.
+
+```
+✅ 팩토리 적용 후 (의존성 역전)
+PizzaStore       → Pizza (추상)
+NYStyleCheese    → Pizza (추상)
+ChicagoStyleCheese → Pizza (추상)
+```
+
+이제 `PizzaStore`는 구체 클래스가 몇 개든, 어떤 것이든 상관없이 `Pizza` 추상화만 바라봅니다.
+
+**DIP를 지키기 위한 가이드라인:**
+
+- 변수에 구체 클래스 타입을 직접 쓰지 않기
+- 구체 클래스를 직접 상속하지 않기 (추상 클래스나 인터페이스에서 파생)
+- 베이스 클래스에 이미 구현된 메서드를 오버라이드하지 않기
+
+물론 이건 가이드라인이지 절대 법칙은 아닙니다. `new Date()`나 `new Map()` 같은 안정적인 클래스까지 팩토리로 감쌀 필요는 없습니다. **변경 가능성이 높은 구체 클래스에 대한 의존**을 줄이는 게 핵심입니다.
+
+---
+
+## 6. 프론트엔드에서의 팩토리 패턴
+
+"팩토리 패턴은 백엔드나 OOP에서나 쓰는 거 아닌가?" 싶을 수 있지만, 프론트엔드에서도 본질은 같습니다. **조건에 따라 다른 것을 만들어야 하는 상황**이 있다면, 그게 팩토리 패턴이 필요한 자리입니다.
+
+### 6-1. 컴포넌트 팩토리
+
+조건에 따라 다른 UI를 렌더링하는 상황, 프론트엔드에서 가장 흔하게 마주치는 팩토리 패턴의 적용 지점입니다.
+
+```tsx
+// ❌ Before: 컴포넌트 안에서 if-else 분기가 난무
+function NotificationBanner({ type, message }: Props) {
+  if (type === "success") {
+    return <div className="bg-green-100 text-green-800 p-4 rounded">{message}</div>;
+  }
+  if (type === "error") {
+    return <div className="bg-red-100 text-red-800 p-4 rounded">{message}</div>;
+  }
+  if (type === "warning") {
+    return <div className="bg-yellow-100 text-yellow-800 p-4 rounded">{message}</div>;
+  }
+  return <div className="bg-gray-100 text-gray-800 p-4 rounded">{message}</div>;
+}
+```
+
+지금은 4가지뿐이지만, 새로운 알림 유형이 추가될 때마다 이 컴포넌트를 열어서 if-else를 추가해야 합니다. 앞서 본 피자 예제의 문제와 정확히 같은 구조입니다.
+
+```tsx
+// ✅ After: 팩토리 맵으로 생성 로직 분리
+type NotificationType = "success" | "error" | "warning" | "info";
+
+interface NotificationConfig {
+  bgColor: string;
+  textColor: string;
+  icon: React.ComponentType;
+}
+
+const notificationFactory: Record<NotificationType, NotificationConfig> = {
+  success: { bgColor: "bg-green-100", textColor: "text-green-800", icon: CheckIcon },
+  error:   { bgColor: "bg-red-100",   textColor: "text-red-800",   icon: XIcon },
+  warning: { bgColor: "bg-yellow-100", textColor: "text-yellow-800", icon: AlertIcon },
+  info:    { bgColor: "bg-gray-100",  textColor: "text-gray-800",  icon: InfoIcon },
+};
+
+function NotificationBanner({ type, message }: Props) {
+  const config = notificationFactory[type];
+  const Icon = config.icon;
+
+  return (
+    <div className={`${config.bgColor} ${config.textColor} p-4 rounded flex gap-2`}>
+      <Icon />
+      <span>{message}</span>
+    </div>
+  );
+}
+```
+
+`NotificationBanner` 컴포넌트는 이제 **렌더링만** 담당합니다. 새 알림 유형을 추가하려면 `notificationFactory` 맵에 한 줄만 추가하면 됩니다. 컴포넌트 코드는 건드릴 필요가 없습니다.
+
+이 패턴은 아이콘, 배지, 상태별 UI, 폼 필드 타입 등 **타입에 따라 다른 설정이 필요한 모든 컴포넌트**에 동일하게 적용됩니다.
+
+### 6-2. API 클라이언트 팩토리
+
+환경(production, development, test)에 따라 서로 다른 HTTP 클라이언트를 사용해야 하는 상황은 실무에서 흔합니다. 프로덕션에서는 실제 API를, 개발 환경에서는 로컬 서버를, 테스트에서는 Mock을 쓰는 식이죠.
+
+```typescript
+interface ApiClient {
+  get<T>(url: string): Promise<T>;
+  post<T>(url: string, data: unknown): Promise<T>;
+}
+
+function createApiClient(env: "production" | "development" | "test"): ApiClient {
+  switch (env) {
+    case "production":
+      return new AxiosApiClient({
+        baseURL: "https://api.example.com",
+        timeout: 5000,
+        interceptors: [authInterceptor, loggingInterceptor],
+      });
+
+    case "development":
+      return new AxiosApiClient({
+        baseURL: "http://localhost:3000",
+        timeout: 30000,
+        interceptors: [loggingInterceptor],
+      });
+
+    case "test":
+      return new MockApiClient();
+  }
+}
+
+// 사용처에서는 환경을 신경 쓰지 않는다
+const api = createApiClient(process.env.NODE_ENV);
+const users = await api.get<User[]>("/users");
+```
+
+사용하는 쪽에서는 `ApiClient` 인터페이스만 알면 됩니다. 내부적으로 Axios를 쓰든 fetch를 쓰든, mock을 쓰든 전혀 상관없습니다. 이것이 DIP가 실무에서 동작하는 모습입니다.
+
+이 패턴은 API 클라이언트 외에도 **로거(Logger)**, **스토리지 어댑터**, **분석 서비스(Analytics)** 등 환경별로 다른 구현체가 필요한 모든 인프라 레이어에 동일하게 적용됩니다.
+
+### 6-3. Query Key 팩토리 (TanStack Query)
+
+TanStack Query를 사용할 때 쿼리 키를 문자열 리터럴로 흩뿌려 놓으면, 오타 하나에 캐시가 꼬이고 invalidation이 의도대로 동작하지 않는 경험을 해보셨을 겁니다.
+
+쿼리 키를 **팩토리 객체**로 한 곳에서 관리하면 이 문제가 깔끔하게 해결됩니다. TanStack Query 공식 문서에서도 권장하는 패턴이며, [TkDodo의 블로그](https://tkdodo.eu/blog/effective-react-query-keys)에서 "Query Key Factory"라는 이름으로 정리된 바 있습니다.
+
+```typescript
+// alarmQueryKeys.ts — 쿼리 키 팩토리
+
+interface IAlarmParams {
+  status?: string;
+  type?: string;
+  startDate?: string;
+  endDate?: string;
+}
+
+export const alarmQueryKeys = {
+  // 최상위: 도메인 전체
+  all: () => ["alarm"] as const,
+
+  // 목록 조회
+  list: (params: IAlarmParams) =>
+    [...alarmQueryKeys.all(), "info", params] as const,
+
+  // count 관련 쿼리를 하나의 그룹으로 묶기
+  counts: () => [...alarmQueryKeys.all(), "counts"] as const,
+  count: () => [...alarmQueryKeys.counts(), "total"] as const,
+  searchCount: (params: IAlarmParams) =>
+    [...alarmQueryKeys.counts(), "search", params] as const,
+};
+```
+
+```typescript
+// 쿼리에서 사용
+const { data: totalCount } = useQuery({
+  queryKey: alarmQueryKeys.count(),
+  queryFn: getAlarmCount,
+});
+
+const { data: searchCount } = useQuery({
+  queryKey: alarmQueryKeys.searchCount(alarmParams),
+  queryFn: () => getAlarmSearchCount(alarmParams),
+});
+```
+
+```typescript
+// 뮤테이션 후 invalidation — counts 그룹을 한 번에 날리기
+const deleteAlarmMutation = useMutation({
+  mutationFn: deleteAlarm,
+  onSuccess: () => {
+    // counts() 하위의 count, searchCount 모두 무효화
+    queryClient.invalidateQueries({ queryKey: alarmQueryKeys.counts() });
+    queryClient.invalidateQueries({ queryKey: alarmQueryKeys.list(alarmParams) });
+  },
+});
+```
+
+**이 구조가 좋은 이유:**
+
+`as const`로 튜플 타입이 추론되기 때문에 오타가 나면 TypeScript가 잡아줍니다. 계층 구조 덕분에 `counts()`만 invalidate하면 그 하위의 `count()`와 `searchCount()` 모두 자동으로 무효화됩니다. 그리고 새 쿼리가 추가되어도 팩토리 객체 하나만 수정하면 됩니다.
+
+앞서 본 Simple Factory와 본질이 같습니다. 쿼리 키 "생성 로직"을 한 곳으로 모아서, 사용처에서는 `alarmQueryKeys.count()`처럼 "뭘 원하는지"만 표현하는 것이죠.
+
+### 6-4. 라우트 경로 팩토리
+
+React Router에서 path 문자열을 컴포넌트 곳곳에 하드코딩하면, 경로 하나 바꿀 때 `Cmd+Shift+F`로 전역 검색해서 여러 파일을 수정해야 합니다. 경로도 "생성할 수 있는 것"으로 보면, 팩토리로 관리할 수 있습니다.
+
+```typescript
+// paths.ts — 경로 팩토리
+
+const PATHS = {
+  AUTH: {
+    LOGIN: () => "/",
+  },
+
+  MAIN: {
+    ROOT: () => "/main",
+    USER_INFO: () => "/main/userinfo",
+  },
+
+  MANAGEMENT: {
+    HOUSING: () => "/main/management/housing",
+    HOUSING_DETAIL: (housingId = ":housingId") =>
+      `/main/management/housing/${housingId}`,
+    VEHICLE: () => "/main/management/vehicle",
+    VEHICLE_DETAIL: (vehicleId = ":vehicleId") =>
+      `/main/management/vehicle/${vehicleId}`,
+  },
+
+  CONSULTATION: {
+    APPROVAL_LIST: (groupId = ":documentGroupId") =>
+      `/main/consultation/approval/${groupId}`,
+    APPROVAL_DETAIL: (groupId = ":documentGroupId", docId = ":documentId") =>
+      `/main/consultation/approval/${groupId}/${docId}`,
+    DRAFT_LIST: (groupId = ":documentGroupId") =>
+      `/main/consultation/draft/${groupId}`,
+    DRAFT_CREATE: (groupId = ":documentGroupId") =>
+      `/main/consultation/draft/${groupId}/create`,
+  },
+
+  ADMIN: {
+    USER_LIST: () => "/admin/userlist",
+    USER_DETAIL: (employeeId = ":employeeId") =>
+      `/admin/user/${employeeId}`,
+    CHECK_LIST_DETAIL: (id = ":checkListId") =>
+      `/admin/checklist/${id}`,
+    CATEGORY_DETAIL: (id = ":documentCategoryId") =>
+      `/admin/category/${id}`,
+  },
+
+  NOT_FOUND: () => "*",
+} as const;
+
+export default PATHS;
+```
+
+이 팩토리의 핵심 트릭은 **기본값 매개변수**입니다:
+
+```tsx
+// 라우트 정의 — 인자 없이 호출하면 :param 패턴을 반환
+<Route path={PATHS.MANAGEMENT.HOUSING_DETAIL()} element={<HousingDetail />} />
+
+// 네비게이션 — 실제 값을 넘기면 구체 경로를 반환
+navigate(PATHS.MANAGEMENT.HOUSING_DETAIL("h-123"));
+// → "/main/management/housing/h-123"
+```
+
+하나의 함수가 **라우트 정의용 패턴**과 **네비게이션용 구체 경로**를 동시에 생성합니다. 경로가 변경되면 `PATHS` 하나만 수정하면 되고, TypeScript가 모든 사용처의 타입 안전성을 보장합니다.
+
+### 6-5. 폼 스키마 팩토리 (Zod + React Hook Form)
+
+복잡한 폼에서 조건에 따라 다른 유효성 검증 스키마가 필요할 때, 스키마 생성을 팩토리로 분리하면 깔끔합니다.
+
+```typescript
+import { z } from "zod";
+
+// 사용자 유형별로 다른 검증 규칙이 필요한 상황
+type UserRole = "individual" | "business" | "admin";
+
+function createUserSchema(role: UserRole) {
+  // 공통 필드
+  const base = z.object({
+    name: z.string().min(1, "이름을 입력해주세요"),
+    email: z.string().email("올바른 이메일을 입력해주세요"),
+  });
+
+  switch (role) {
+    case "individual":
+      return base.extend({
+        phone: z.string().regex(/^01[016789]-?\d{3,4}-?\d{4}$/, "올바른 휴대폰 번호를 입력해주세요"),
+      });
+
+    case "business":
+      return base.extend({
+        companyName: z.string().min(1, "회사명을 입력해주세요"),
+        businessNumber: z.string().length(10, "사업자번호는 10자리입니다"),
+        department: z.string().optional(),
+      });
+
+    case "admin":
+      return base.extend({
+        employeeId: z.string().min(1, "사번을 입력해주세요"),
+        accessLevel: z.enum(["read", "write", "super"]),
+      });
+  }
+}
+```
+
+```tsx
+// 컴포넌트에서 사용
+function RegistrationForm({ role }: { role: UserRole }) {
+  const schema = createUserSchema(role);
+  type FormData = z.infer<typeof schema>;
+
+  const { register, handleSubmit, formState: { errors } } = useForm<FormData>({
+    resolver: zodResolver(schema),
+  });
+
+  return (
+    <form onSubmit={handleSubmit(onSubmit)}>
+      {/* role에 따라 동적으로 결정된 스키마가 적용됨 */}
+      <input {...register("name")} />
+      {role === "business" && <input {...register("companyName")} />}
+      {/* ... */}
+    </form>
+  );
+}
+```
+
+`RegistrationForm`은 "어떤 역할이냐"만 알면 됩니다. 어떤 필드가 필요하고 어떤 규칙으로 검증하는지는 `createUserSchema` 팩토리가 결정합니다. 역할이 추가되면 팩토리에 case를 추가하면 되고, 폼 컴포넌트는 변경할 필요가 없습니다.
+
+---
+
+## 7. 정리
+
+### 언제 무엇을 쓸까
+
+| 상황 | 선택 |
+|------|------|
+| 생성 로직이 한 곳에서만 쓰인다 | Simple Factory |
+| 서브클래스마다 다른 제품을 만들어야 한다 | Factory Method |
+| 관련된 제품군을 일관되게 교체해야 한다 | Abstract Factory |
+| 타입별 컴포넌트 렌더링 | 컴포넌트 팩토리 맵 |
+| 환경별 설정이 다른 객체 생성 | 팩토리 함수 |
+| 쿼리 키 / 라우트 경로 관리 | 팩토리 객체 |
+| 조건별 폼 유효성 검증 | 스키마 팩토리 함수 |
+
+### 핵심 요약
+
+1. **팩토리 패턴의 본질은 `new`의 캡슐화**입니다. 클라이언트가 구체 클래스를 직접 알지 않아도 되게 만듭니다.
+2. **Factory Method**는 상속을 통해, **Abstract Factory**는 구성(composition)을 통해 동작합니다. 둘은 배타적이지 않습니다.
+3. **DIP(의존성 역전 원칙)**: 변경 가능성이 높은 구체 클래스가 아닌, 안정적인 추상화에 의존하세요.
+4. 프론트엔드에서 팩토리 패턴은 거창한 클래스 구조가 아니라, **Record 맵**, **팩토리 함수**, **키 생성 객체** 같은 가벼운 형태로 자연스럽게 녹아듭니다.
+
+팩토리 패턴을 적용할지 판단하는 기준은 간단합니다. **"조건에 따라 다른 것을 만들어야 하는데, 그 조건이 앞으로도 변할 가능성이 높은가?"** 그렇다면 팩토리로 분리할 타이밍입니다.
