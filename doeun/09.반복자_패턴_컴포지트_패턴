@@ -1,0 +1,399 @@
+# 반복자 패턴과 컴포지트 패턴 (Iterator & Composite Pattern)
+
+## 1. 들어가며
+
+메뉴가 두 개. 하나는 배열, 하나는 객체. 둘 다 순회해야 하는데 방식이 달라 조건문 도배.
+
+```js
+// 배열 메뉴
+const breakfastMenu = ['팬케이크', '오트밀', '와플'];
+
+// 객체 메뉴
+const lunchMenu = {
+  '파스타': { price: 12000 },
+  '샐러드': { price: 8000 },
+};
+
+// 순회할 때마다 다른 방식
+breakfastMenu.forEach(item => print(item));
+Object.entries(lunchMenu).forEach(([name]) => print(name));
+```
+
+자료구조가 바뀔 때마다 순회 코드도 바뀜. 호출하는 쪽이 내부 구조를 알아야 함. 이게 문제.
+
+반복자 패턴은 "순회 방식을 자료구조에서 분리". 컴포지트 패턴은 "단일 객체와 복합 객체를 동일하게 취급". 두 패턴 자주 함께 등장.
+
+---
+
+## 2. 반복자 패턴이 필요한 상황
+
+카테고리별로 다른 자료구조에 메뉴 저장. 출력 코드는 하나로 쓰고 싶음.
+
+```js
+function printMenu(menu) {
+  if (Array.isArray(menu)) {
+    for (let i = 0; i < menu.length; i++) {
+      console.log(menu[i]);
+    }
+  } else if (menu instanceof Map) {
+    menu.forEach((value, key) => console.log(key, value));
+  } else {
+    Object.entries(menu).forEach(([k, v]) => console.log(k, v));
+  }
+}
+```
+
+자료구조 추가 시마다 분기 추가. `printMenu`가 내부 구현 다 알아야 함. 순회 로직이 여기저기 흩어짐.
+
+---
+
+## 3. 반복자 패턴이란?
+
+컬렉션 내부 구현 노출 없이 순회하는 인터페이스 제공.
+
+구성 요소:
+
+- **Iterator**: `hasNext()`, `next()` 제공
+- **ConcreteIterator**: 자료구조별 구현체
+- **Aggregate**: 이터레이터 생성 메소드 보유
+
+```js
+class ArrayMenuIterator {
+  #items;
+  #index = 0;
+
+  constructor(items) { this.#items = items; }
+
+  hasNext() { return this.#index < this.#items.length; }
+  next() { return this.#items[this.#index++]; }
+}
+
+class ObjectMenuIterator {
+  #entries;
+  #index = 0;
+
+  constructor(obj) { this.#entries = Object.entries(obj); }
+
+  hasNext() { return this.#index < this.#entries.length; }
+  next() { return this.#entries[this.#index++]; }
+}
+```
+
+출력 코드는 이터레이터만 알면 됨:
+
+```js
+function printMenu(iterator) {
+  while (iterator.hasNext()) {
+    console.log(iterator.next());
+  }
+}
+
+// 자료구조 달라도 같은 함수
+printMenu(new ArrayMenuIterator(breakfastMenu));
+printMenu(new ObjectMenuIterator(lunchMenu));
+```
+
+`printMenu`가 내부 구조를 전혀 모름. 이터레이터 인터페이스만 알면 됨.
+
+---
+
+## 4. JS 네이티브 이터레이터
+
+사실 JS에 이미 내장. `Symbol.iterator` 프로토콜.
+
+```js
+// 커스텀 이터러블
+const menuCollection = {
+  items: ['팬케이크', '오트밀', '와플'],
+  
+  [Symbol.iterator]() {
+    let index = 0;
+    const items = this.items;
+    return {
+      next() {
+        return index < items.length
+          ? { value: items[index++], done: false }
+          : { value: undefined, done: true };
+      }
+    };
+  }
+};
+
+// for...of, spread, 구조분해 전부 됨
+for (const item of menuCollection) console.log(item);
+const arr = [...menuCollection];
+```
+
+`for...of`가 바로 반복자 패턴. 배열, Map, Set, NodeList 전부 `Symbol.iterator` 구현체.
+
+제너레이터로 더 간결하게:
+
+```js
+class Menu {
+  #items = [];
+
+  add(item) { this.#items.push(item); }
+
+  *[Symbol.iterator]() {
+    for (const item of this.#items) yield item;
+  }
+}
+
+const menu = new Menu();
+menu.add('팬케이크');
+for (const item of menu) console.log(item); // 내부 구조 노출 없이 순회
+```
+
+---
+
+## 5. 컴포지트 패턴이 필요한 상황
+
+파일 시스템. 폴더 안에 파일, 폴더 안에 또 폴더. 전체 용량 계산 시:
+
+```js
+function getSize(item) {
+  if (item.type === 'file') {
+    return item.size;
+  } else if (item.type === 'folder') {
+    return item.children.reduce((sum, child) => sum + getSize(child), 0);
+  }
+}
+```
+
+타입 체크 반복. 새 타입 추가 시 분기 추가. 호출부가 구조 알아야 함.
+
+메뉴 예제도 마찬가지. 메뉴 → 서브메뉴 → 서브서브메뉴. 트리 구조 순회 시 항상 이 문제.
+
+---
+
+## 6. 컴포지트 패턴이란?
+
+단일 객체(Leaf)와 복합 객체(Composite)를 같은 인터페이스로 취급. 트리 구조를 균일하게 다룸.
+
+구성 요소:
+
+- **Component**: 공통 인터페이스
+- **Leaf**: 자식 없는 단말 노드
+- **Composite**: 자식 보유, Component 목록 관리
+
+```js
+// 공통 인터페이스 (Component)
+class MenuComponent {
+  getName() { throw new Error('구현 필요'); }
+  getPrice() { throw new Error('구현 필요'); }
+  print() { throw new Error('구현 필요'); }
+}
+
+// 단일 메뉴 아이템 (Leaf)
+class MenuItem extends MenuComponent {
+  constructor(name, price) {
+    super();
+    this.name = name;
+    this.price = price;
+  }
+
+  getName() { return this.name; }
+  getPrice() { return this.price; }
+  print() { console.log(`  ${this.name}: ${this.price}원`); }
+}
+
+// 메뉴 그룹 (Composite)
+class Menu extends MenuComponent {
+  #children = [];
+
+  constructor(name) { super(); this.name = name; }
+
+  add(component) { this.#children.push(component); }
+  remove(component) { this.#children = this.#children.filter(c => c !== component); }
+  getName() { return this.name; }
+
+  // 재귀적으로 자식 순회
+  getPrice() { return this.#children.reduce((sum, c) => sum + c.getPrice(), 0); }
+  print() {
+    console.log(`[${this.name}]`);
+    this.#children.forEach(c => c.print());
+  }
+}
+```
+
+사용:
+
+```js
+const allMenus = new Menu('전체 메뉴');
+
+const breakfast = new Menu('아침 메뉴');
+breakfast.add(new MenuItem('팬케이크', 8000));
+breakfast.add(new MenuItem('오트밀', 6000));
+
+const lunch = new Menu('점심 메뉴');
+lunch.add(new MenuItem('파스타', 12000));
+lunch.add(new MenuItem('샐러드', 8000));
+
+allMenus.add(breakfast);
+allMenus.add(lunch);
+
+// Leaf든 Composite든 같은 메소드
+allMenus.print();
+console.log(allMenus.getPrice()); // 34000
+breakfast.print(); // 부분만도 가능
+```
+
+호출부는 대상이 Leaf인지 Composite인지 몰라도 됨.
+
+---
+
+## 7. 두 패턴 함께 쓰기
+
+컴포지트 + 반복자 조합이 강력. 트리를 평탄하게 순회.
+
+```js
+class Menu extends MenuComponent {
+  #children = [];
+  // ...
+
+  // 이터레이터 제공
+  *[Symbol.iterator]() {
+    for (const child of this.#children) {
+      if (child instanceof MenuItem) {
+        yield child;
+      } else {
+        yield* child; // Composite면 재귀 순회
+      }
+    }
+  }
+}
+
+// 중첩 구조 무관하게 모든 MenuItem 순회
+for (const item of allMenus) {
+  if (item.getPrice() < 10000) console.log(item.getName()); // 저렴한 것만
+}
+```
+
+트리 깊이, 구조 몰라도 순회 가능.
+
+---
+
+## 8. 프론트엔드 실무 적용
+
+### 사례 1: 사이드바 메뉴 트리
+
+관리자 페이지 사이드바. 메뉴 → 서브메뉴 재귀 구조.
+
+```tsx
+// 컴포지트 구조로 데이터 정의
+interface MenuLeaf {
+  type: 'item';
+  label: string;
+  path: string;
+}
+
+interface MenuGroup {
+  type: 'group';
+  label: string;
+  children: (MenuLeaf | MenuGroup)[];
+}
+
+// 단일 컴포넌트가 Leaf/Composite 모두 처리
+function MenuItem({ node }: { node: MenuLeaf | MenuGroup }) {
+  if (node.type === 'item') {
+    return <Link to={node.path}>{node.label}</Link>;
+  }
+
+  return (
+    <details>
+      <summary>{node.label}</summary>
+      {node.children.map((child, i) => (
+        <MenuItem key={i} node={child} />  // 재귀
+      ))}
+    </details>
+  );
+}
+```
+
+중첩 몇 단계든 같은 컴포넌트. 타입 분기는 컴포넌트 내부에만.
+
+### 사례 2: 트리 데이터 평탄화
+
+서버에서 트리 구조 받아 flat 배열 필요 시 (검색, 필터 등).
+
+```js
+function* flattenTree(nodes) {
+  for (const node of nodes) {
+    yield node;
+    if (node.children?.length) {
+      yield* flattenTree(node.children); // 재귀 이터레이터
+    }
+  }
+}
+
+const allNodes = [...flattenTree(treeData)];
+const searchResult = allNodes.filter(n => n.label.includes(keyword));
+```
+
+반복자 + 재귀 제너레이터. 깊이 무관하게 평탄 순회.
+
+### 사례 3: 폼 필드 트리
+
+다단계 처방전 폼. 섹션 → 서브섹션 → 필드 구조.
+
+```js
+class FieldGroup {
+  #fields = [];
+  add(field) { this.#fields.push(field); }
+
+  // 전체 유효성 검사 - Leaf든 Group이든 validate() 호출
+  validate() {
+    return this.#fields.every(f => f.validate());
+  }
+
+  // 전체 값 수집
+  getValues() {
+    return this.#fields.reduce((acc, f) => ({ ...acc, ...f.getValues() }), {});
+  }
+}
+
+class Field {
+  constructor(name, rules) { /* ... */ }
+  validate() { /* 단일 필드 검증 */ }
+  getValues() { return { [this.name]: this.value }; }
+}
+```
+
+최상위 그룹에서 `validate()` 한 번이면 전체 트리 검증. 구조 변경해도 호출부 코드 안 바뀜.
+
+---
+
+## 9. 주의점
+
+**반복자 패턴**
+- JS 네이티브 이터레이터 먼저 활용. 커스텀 이터레이터는 네이티브로 못 할 때만
+- 무한 이터레이터 주의. `for...of` 탈출 조건 명시
+
+**컴포지트 패턴**
+- 트리가 아닌 단순 목록에 적용하면 과설계
+- Leaf와 Composite에 공통 인터페이스 강제 시 불필요한 메소드 생김. TypeScript 유니온 타입으로 대체 가능
+
+```ts
+// 클래스 상속 대신 유니온 타입도 충분한 경우
+type TreeNode = LeafNode | CompositeNode;
+
+function render(node: TreeNode) {
+  if (node.type === 'leaf') return <Leaf />;
+  return <Group>{node.children.map(render)}</Group>;
+}
+```
+
+---
+
+## 10. 정리
+
+| | 반복자 패턴 | 컴포지트 패턴 |
+|---|---|---|
+| 목적 | 순회 방식 캡슐화 | 트리 구조 균일 처리 |
+| 핵심 | 자료구조 몰라도 순회 | Leaf/Composite 같은 인터페이스 |
+| JS 네이티브 | `Symbol.iterator`, `for...of` | — |
+| 프론트 활용 | 트리 평탄화, 커스텀 컬렉션 | 사이드바, 폼 트리, 파일 구조 |
+
+- 반복자: "어떻게 순회하는지" 숨김
+- 컴포지트: "단일이냐 복합이냐" 숨김
+- 둘 다 공통 목표 = 호출부가 내부 구조 몰라도 됨
